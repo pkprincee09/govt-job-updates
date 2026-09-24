@@ -3,11 +3,11 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 
 const JOBS_FILE = "jobs.json";
-const RSS_URL = "https://www.sarkariresult.com/feed_rss.xml";
+
+const SOURCE =
+  "https://employmentnews.gov.in/newemp/AllJobs.aspx?k=All";
 
 function loadJobs() {
-  if (!fs.existsSync(JOBS_FILE)) return [];
-
   try {
     return JSON.parse(fs.readFileSync(JOBS_FILE, "utf8"));
   } catch {
@@ -16,87 +16,85 @@ function loadJobs() {
 }
 
 function clean(text = "") {
-  return text
-    .replace(/\s+/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .trim();
+  return text.replace(/\s+/g, " ").trim();
 }
 
-async function getRSSJobs() {
-  const response = await axios.get(RSS_URL, {
+async function main() {
+  console.log("Checking Employment News...");
+
+  const response = await axios.get(SOURCE, {
     timeout: 30000,
     headers: {
-      "User-Agent": "GovtJobUpdates/1.0"
+      "User-Agent": "Mozilla/5.0"
     }
   });
 
-  const $ = cheerio.load(response.data, {
-    xmlMode: true
-  });
+  const $ = cheerio.load(response.data);
 
   const jobs = [];
 
-  $("item").each((_, item) => {
-    const title = clean($(item).find("title").text());
-    const link = clean($(item).find("link").text());
-    const description = clean($(item).find("description").text());
-    const pubDate = clean($(item).find("pubDate").text());
+  $("table tr").each((index, row) => {
+    const cells = $(row)
+      .find("td")
+      .map((_, cell) => clean($(cell).text()))
+      .get();
 
-    if (!title || !link) return;
+    if (cells.length < 5) return;
+
+    const [issuedDate, organization, post, method, lastDate] = cells;
+
+    if (
+      !organization ||
+      !post ||
+      !lastDate ||
+      organization === "ORGANISATION"
+    ) {
+      return;
+    }
 
     jobs.push({
-      id: link,
-      title,
-      organization: "",
+      id: `${organization}-${post}-${lastDate}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-"),
+
+      title: post,
+      organization: organization,
       vacancy: "",
-      startDate: "",
-      lastDate: "",
-      fee: "",
-      qualification: "",
-      age: "",
-      applyLink: link,
-      category: "Latest Jobs",
-      description,
-      source: "SarkariResult",
-      publishedAt: pubDate,
+      startDate: issuedDate,
+      lastDate: lastDate,
+      fee: "Check Official Notification",
+      qualification: "Check Official Notification",
+      age: "Check Official Notification",
+      applyLink: SOURCE,
+      category: "Government Jobs",
+      source: "Employment News",
       updatedAt: new Date().toISOString()
     });
   });
 
-  return jobs;
-}
-
-async function main() {
-  console.log("Checking SarkariResult RSS...");
+  console.log(`Jobs found: ${jobs.length}`);
 
   const oldJobs = loadJobs();
-  const newJobs = await getRSSJobs();
 
-  const existingIds = new Set(
-    oldJobs.map(job => job.id)
-  );
+  const oldIds = new Set(oldJobs.map(job => job.id));
 
-  const freshJobs = newJobs.filter(
-    job => !existingIds.has(job.id)
-  );
+  const newJobs = jobs.filter(job => !oldIds.has(job.id));
 
-  console.log(`RSS items found: ${newJobs.length}`);
-  console.log(`New jobs found: ${freshJobs.length}`);
+  console.log(`New jobs: ${newJobs.length}`);
 
   const combined = [
-    ...freshJobs,
+    ...newJobs,
     ...oldJobs
-  ];
-
-  // Keep latest 100 posts
-  const finalJobs = combined.slice(0, 100);
+  ].slice(0, 100);
 
   fs.writeFileSync(
     JOBS_FILE,
-    JSON.stringify(finalJobs, null, 2) + "\n"
+    JSON.stringify(combined, null, 2) + "\n"
   );
 
-  console.log(`jobs.json updated. Total jobs: ${finalJobs.length}`);
+  console.log(
+    `jobs.json updated. Total: ${combined.length}`
+  );
 }
 
 main().catch(error => {
