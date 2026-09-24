@@ -1,4 +1,7 @@
 import fs from "fs";
+import path from "path";
+import os from "os";
+import { execFileSync } from "child_process";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import pdfParse from "pdf-parse";
@@ -13,8 +16,9 @@ const WEB_ADS =
 
 function clean(text = "") {
   return text
-    .replace(/\s+/g, " ")
     .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -29,9 +33,8 @@ function loadJobs() {
 }
 
 async function getPage(url) {
-
   const response = await axios.get(url, {
-    timeout: 30000,
+    timeout: 40000,
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
@@ -44,22 +47,17 @@ async function getPage(url) {
 }
 
 async function getJobs() {
-
   console.log("Fetching Employment News...");
 
   const html = await getPage(ALL_JOBS);
-
   const $ = cheerio.load(html);
 
   const jobs = [];
 
   $("table tr").each((_, row) => {
-
     const cells = $(row)
       .find("td")
-      .map((_, cell) =>
-        clean($(cell).text())
-      )
+      .map((_, cell) => clean($(cell).text()))
       .get();
 
     if (cells.length < 5) return;
@@ -70,11 +68,7 @@ async function getJobs() {
     const method = cells[3];
     const lastDate = cells[4];
 
-    if (
-      !organization ||
-      !post ||
-      !lastDate
-    ) {
+    if (!organization || !post || !lastDate) {
       return;
     }
 
@@ -92,91 +86,54 @@ async function getJobs() {
         .replace(/^-|-$/g, "");
 
     jobs.push({
-
       id,
-
       title: post,
-
       organization,
-
       vacancy: "",
-
       startDate: issuedDate,
-
       lastDate,
-
       fee: "",
-
       qualification: "",
-
       age: "",
-
       method,
-
       applyLink: "",
-
       notificationLink: "",
-
       category: "Government Jobs",
-
       source: "Employment News",
-
-      updatedAt:
-        new Date().toISOString()
-
+      updatedAt: new Date().toISOString()
     });
-
   });
 
   return jobs;
 }
 
 async function getAdvertisementLinks() {
+  console.log("Finding advertisement PDFs...");
 
-  console.log(
-    "Finding advertisement PDFs..."
-  );
-
-  const html =
-    await getPage(WEB_ADS);
-
-  const $ =
-    cheerio.load(html);
+  const html = await getPage(WEB_ADS);
+  const $ = cheerio.load(html);
 
   const ads = [];
 
   $("a").each((_, a) => {
-
-    const text =
-      clean($(a).text());
-
-    const href =
-      $(a).attr("href");
+    const text = clean($(a).text());
+    const href = $(a).attr("href");
 
     if (!href) return;
 
-    const fullUrl =
-      new URL(
-        href,
-        WEB_ADS
-      ).href;
+    const url = new URL(
+      href,
+      WEB_ADS
+    ).href;
 
     if (
-      fullUrl
-        .toLowerCase()
-        .includes(".pdf")
+      url.toLowerCase().includes(".pdf")
     ) {
-
       ads.push({
-
         text,
-
-        url: fullUrl
-
+        url
       });
-
     }
-
   });
 
   return ads;
@@ -184,264 +141,383 @@ async function getAdvertisementLinks() {
 
 function findAdvertisement(
   organization,
+  title,
   ads
 ) {
+  const orgWords = organization
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter(w => w.length >= 4);
 
-  const words =
-    organization
-      .toLowerCase()
-      .replace(
-        /[^a-z0-9]+/g,
-        " "
-      )
-      .split(" ")
-      .filter(
-        word => word.length >= 4
-      );
+  const titleWords = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter(w => w.length >= 4);
 
   let best = null;
-
   let bestScore = 0;
 
   for (const ad of ads) {
-
-    const text =
-      ad.text
-        .toLowerCase()
-        .replace(
-          /[^a-z0-9]+/g,
-          " "
-        );
+    const text = (
+      ad.text +
+      " " +
+      ad.url
+    )
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ");
 
     let score = 0;
 
-    for (const word of words) {
-
+    for (const word of orgWords) {
       if (text.includes(word)) {
-        score++;
+        score += 3;
       }
+    }
 
+    for (const word of titleWords) {
+      if (text.includes(word)) {
+        score += 1;
+      }
     }
 
     if (score > bestScore) {
-
       bestScore = score;
-
       best = ad;
-
     }
-
   }
 
-  if (
-    best &&
-    bestScore >=
-      Math.min(2, words.length)
-  ) {
-
-    return best;
-
+  if (!best) {
+    return null;
   }
 
-  return null;
+  return best;
 }
 
-function extractField(
-  text,
-  patterns
-) {
-
-  for (
-    const pattern of patterns
-  ) {
-
-    const match =
-      text.match(pattern);
-
-    if (
-      match &&
-      match[1]
-    ) {
-
-      return clean(
-        match[1]
-      ).slice(0, 1500);
-
+async function downloadPDF(url) {
+  const response = await axios.get(url, {
+    responseType: "arraybuffer",
+    timeout: 60000,
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0"
     }
+  });
 
-  }
-
-  return "";
-
+  return Buffer.from(response.data);
 }
 
-async function readPDF(
-  url
-) {
+async function extractNormalPDFText(buffer) {
+  try {
+    const pdf = await pdfParse(buffer);
+
+    return clean(pdf.text || "");
+  } catch {
+    return "";
+  }
+}
+
+function extractOCRText(buffer) {
+  const tempDir = fs.mkdtempSync(
+    path.join(
+      os.tmpdir(),
+      "govjob-"
+    )
+  );
+
+  const pdfPath = path.join(
+    tempDir,
+    "notice.pdf"
+  );
+
+  const outputPrefix = path.join(
+    tempDir,
+    "page"
+  );
 
   try {
-
-    console.log(
-      "Reading PDF:",
-      url
+    fs.writeFileSync(
+      pdfPath,
+      buffer
     );
 
-    const response =
-      await axios.get(
-        url,
-        {
-          responseType:
-            "arraybuffer",
-
-          timeout: 30000,
-
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0"
-          }
-        }
-      );
-
-    const pdf =
-      await pdfParse(
-        response.data
-      );
-
-    return clean(
-      pdf.text
+    // Convert first 8 pages to images.
+    execFileSync(
+      "pdftoppm",
+      [
+        "-f",
+        "1",
+        "-l",
+        "8",
+        "-jpeg",
+        "-r",
+        "150",
+        pdfPath,
+        outputPrefix
+      ],
+      {
+        stdio: "ignore"
+      }
     );
+
+    const files =
+      fs.readdirSync(tempDir)
+        .filter(
+          file =>
+            file.startsWith("page-") &&
+            file.endsWith(".jpg")
+        )
+        .sort();
+
+    let result = "";
+
+    for (const file of files) {
+      const imagePath =
+        path.join(
+          tempDir,
+          file
+        );
+
+      try {
+        const text =
+          execFileSync(
+            "tesseract",
+            [
+              imagePath,
+              "stdout",
+              "-l",
+              "eng",
+              "--psm",
+              "6"
+            ],
+            {
+              encoding: "utf8",
+              maxBuffer:
+                10 * 1024 * 1024
+            }
+          );
+
+        result += "\n" + text;
+      } catch {
+        // Continue with next page.
+      }
+    }
+
+    return clean(result);
 
   } catch (error) {
-
     console.log(
-      "PDF read failed:",
+      "OCR failed:",
       error.message
     );
 
     return "";
 
+  } finally {
+    try {
+      fs.rmSync(
+        tempDir,
+        {
+          recursive: true,
+          force: true
+        }
+      );
+    } catch {}
+  }
+}
+
+function firstMatch(text, patterns) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (
+      match &&
+      match[1] &&
+      clean(match[1]).length > 1
+    ) {
+      return clean(
+        match[1]
+      ).slice(0, 1500);
+    }
   }
 
+  return "";
+}
+
+function extractVacancy(text) {
+  return firstMatch(text, [
+    /(?:total\s+)?(?:number\s+of\s+)?vacancies?\s*[:\-]?\s*(\d[\d,\s]*)/i,
+
+    /(?:no\.?\s+of\s+)?vacancies?\s*[:\-]?\s*(\d[\d,\s]*)/i,
+
+    /(?:total\s+)?posts?\s*[:\-]?\s*(\d[\d,\s]*)/i,
+
+    /(?:no\.?\s+of\s+)?posts?\s*[:\-]?\s*(\d[\d,\s]*)/i
+  ]);
+}
+
+function extractAge(text) {
+  return firstMatch(text, [
+    /age\s+limit\s*[:\-]?\s*([^\n]{5,300})/i,
+
+    /upper\s+age\s+limit\s*[:\-]?\s*([^\n]{5,300})/i,
+
+    /maximum\s+age\s*(?:limit)?\s*[:\-]?\s*([^\n]{5,300})/i,
+
+    /age\s*(?:as\s+on|cut[\s-]?off)?\s*[:\-]?\s*([^\n]{5,300})/i
+  ]);
+}
+
+function extractFee(text) {
+  return firstMatch(text, [
+    /application\s+fee\s*[:\-]?\s*([^\n]{5,400})/i,
+
+    /examination\s+fee\s*[:\-]?\s*([^\n]{5,400})/i,
+
+    /exam\s+fee\s*[:\-]?\s*([^\n]{5,400})/i,
+
+    /fee\s+(?:payable|required)\s*[:\-]?\s*([^\n]{5,400})/i
+  ]);
+}
+
+function extractQualification(text) {
+  return firstMatch(text, [
+    /essential\s+qualification\s*[:\-]?\s*([\s\S]{20,1000}?)(?=\n[A-Z][A-Za-z ]{2,40}\s*:|\n\d+[\.\)]|\nage\s+limit|\nexperience|$)/i,
+
+    /educational\s+qualification\s*[:\-]?\s*([\s\S]{20,1000}?)(?=\n[A-Z][A-Za-z ]{2,40}\s*:|\n\d+[\.\)]|\nage\s+limit|\nexperience|$)/i,
+
+    /educational\s+qualifications\s*[:\-]?\s*([\s\S]{20,1000}?)(?=\n[A-Z][A-Za-z ]{2,40}\s*:|\n\d+[\.\)]|\nage\s+limit|\nexperience|$)/i,
+
+    /qualification\s*[:\-]?\s*([\s\S]{20,800}?)(?=\n[A-Z][A-Za-z ]{2,40}\s*:|\nage\s+limit|\nexperience|$)/i
+  ]);
 }
 
 async function enrichJob(
   job,
   advertisement
 ) {
-
   if (!advertisement) {
-
     return {
-
       ...job,
-
       fee:
+        job.fee ||
         "See Official Notification",
-
       age:
+        job.age ||
         "See Official Notification",
-
       qualification:
+        job.qualification ||
         "See Official Notification"
-
     };
-
   }
 
-  const text =
-    await readPDF(
-      advertisement.url
+  console.log(
+    "Reading:",
+    job.organization,
+    "|",
+    job.title
+  );
+
+  let buffer;
+
+  try {
+    buffer =
+      await downloadPDF(
+        advertisement.url
+      );
+  } catch (error) {
+    console.log(
+      "PDF download failed:",
+      error.message
     );
 
-  if (!text) {
-
     return {
-
       ...job,
-
       notificationLink:
         advertisement.url,
-
       applyLink:
         advertisement.url,
-
       fee:
         "See Official Notification",
-
       age:
         "See Official Notification",
-
       qualification:
         "See Official Notification"
-
     };
+  }
 
+  // First try normal PDF text.
+  let text =
+    await extractNormalPDFText(
+      buffer
+    );
+
+  console.log(
+    "Normal PDF text length:",
+    text.length
+  );
+
+  // If PDF is scanned/image based, use OCR.
+  if (text.length < 150) {
+    console.log(
+      "PDF appears scanned. Starting OCR..."
+    );
+
+    text =
+      extractOCRText(
+        buffer
+      );
+
+    console.log(
+      "OCR text length:",
+      text.length
+    );
   }
 
   const vacancy =
-    extractField(
-      text,
-      [
-        /total\s+vacanc(?:y|ies)\s*[:\-]?\s*([0-9,]+)/i,
-
-        /total\s+posts?\s*[:\-]?\s*([0-9,]+)/i,
-
-        /number\s+of\s+vacanc(?:y|ies)\s*[:\-]?\s*([0-9,]+)/i
-      ]
-    );
+    extractVacancy(text);
 
   const age =
-    extractField(
-      text,
-      [
-        /age\s+limit\s*[:\-]?\s*([^.;]{5,500})/i,
-
-        /maximum\s+age\s*[:\-]?\s*([^.;]{5,500})/i
-      ]
-    );
+    extractAge(text);
 
   const fee =
-    extractField(
-      text,
-      [
-        /application\s+fee\s*[:\-]?\s*([^.;]{5,500})/i,
-
-        /examination\s+fee\s*[:\-]?\s*([^.;]{5,500})/i,
-
-        /fee\s+payable\s*[:\-]?\s*([^.;]{5,500})/i
-      ]
-    );
+    extractFee(text);
 
   const qualification =
-    extractField(
-      text,
-      [
-        /educational\s+qualification\s*[:\-]?\s*([^.;]{20,1500})/i,
+    extractQualification(text);
 
-        /essential\s+qualification\s*[:\-]?\s*([^.;]{20,1500})/i,
-
-        /educational\s+qualifications\s*[:\-]?\s*([^.;]{20,1500})/i
-      ]
-    );
+  console.log(
+    "Extracted:",
+    {
+      vacancy,
+      age: !!age,
+      fee: !!fee,
+      qualification: !!qualification
+    }
+  );
 
   return {
-
     ...job,
 
     vacancy:
       vacancy ||
-      "See Official Notification",
-
-    fee:
-      fee ||
+      job.vacancy ||
       "See Official Notification",
 
     age:
       age ||
+      job.age ||
+      "See Official Notification",
+
+    fee:
+      fee ||
+      job.fee ||
       "See Official Notification",
 
     qualification:
       qualification ||
+      job.qualification ||
       "See Official Notification",
 
     notificationLink:
@@ -452,19 +528,16 @@ async function enrichJob(
 
     updatedAt:
       new Date().toISOString()
-
   };
-
 }
 
 async function main() {
-
   console.log(
     "================================"
   );
 
   console.log(
-    "Government Job Updater Started"
+    "Government Job Updater"
   );
 
   console.log(
@@ -483,7 +556,7 @@ async function main() {
     await getAdvertisementLinks();
 
   console.log(
-    "PDF advertisements found:",
+    "PDF advertisements:",
     ads.length
   );
 
@@ -502,75 +575,74 @@ async function main() {
 
   const result = [];
 
-  // First 20 jobs = safe test
+  // Test first 20 jobs.
   const jobsToProcess =
     jobs.slice(0, 20);
 
   for (
     const job of jobsToProcess
   ) {
-
     const old =
       oldMap.get(
         job.id
       );
 
-    if (
+    // Only skip if all important fields
+    // were already successfully extracted.
+    const alreadyComplete =
       old &&
-      old.notificationLink
-    ) {
+      old.notificationLink &&
+      old.vacancy &&
+      old.vacancy !==
+        "See Official Notification" &&
+      old.age &&
+      old.age !==
+        "See Official Notification" &&
+      old.fee &&
+      old.fee !==
+        "See Official Notification" &&
+      old.qualification &&
+      old.qualification !==
+        "See Official Notification";
 
-      result.push(
-        old
-      );
-
+    if (alreadyComplete) {
+      result.push(old);
       continue;
-
     }
-
-    console.log(
-      "Processing:",
-      job.organization,
-      "-",
-      job.title
-    );
 
     const advertisement =
       findAdvertisement(
         job.organization,
+        job.title,
         ads
       );
 
+    const baseJob = {
+      ...job,
+      ...(old || {})
+    };
+
     const enriched =
       await enrichJob(
-        job,
+        baseJob,
         advertisement
       );
 
     result.push(
       enriched
     );
-
   }
 
-  // Keep older jobs after current jobs
-  for (
-    const old of oldJobs
-  ) {
-
+  // Keep older jobs.
+  for (const old of oldJobs) {
     if (
       !result.some(
         job =>
           job.id === old.id
       )
     ) {
-
-      result.push(
-        old
-      );
-
+      result.push(old);
     }
-
   }
 
   const finalJobs =
@@ -578,7 +650,6 @@ async function main() {
 
   fs.writeFileSync(
     JOBS_FILE,
-
     JSON.stringify(
       finalJobs,
       null,
@@ -602,21 +673,16 @@ async function main() {
   console.log(
     "================================"
   );
-
 }
 
-main().catch(
-  error => {
+main().catch(error => {
+  console.error(
+    "Updater failed:"
+  );
 
-    console.error(
-      "Updater failed:"
-    );
+  console.error(
+    error
+  );
 
-    console.error(
-      error
-    );
-
-    process.exit(1);
-
-  }
-);
+  process.exit(1);
+});
