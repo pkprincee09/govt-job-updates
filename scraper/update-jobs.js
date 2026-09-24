@@ -4,7 +4,7 @@ import * as cheerio from "cheerio";
 
 const JOBS_FILE = "jobs.json";
 
-const SOURCE_URL = "https://old.sarkariresult.com/";
+const SOURCE_URL = "https://www.sarkariresult.com/";
 
 const HEADERS = {
   "User-Agent":
@@ -20,7 +20,7 @@ function clean(text = "") {
     .trim();
 }
 
-function loadOldJobs() {
+function loadJobs() {
   try {
     return JSON.parse(
       fs.readFileSync(JOBS_FILE, "utf8")
@@ -33,7 +33,8 @@ function loadOldJobs() {
 async function getPage(url) {
   const response = await axios.get(url, {
     timeout: 40000,
-    headers: HEADERS
+    headers: HEADERS,
+    maxRedirects: 5
   });
 
   return response.data;
@@ -47,16 +48,26 @@ function makeId(title, url) {
     .slice(0, 180);
 }
 
-function isJobLink(url, text) {
+function isUsefulJobLink(url, text) {
   const value =
     `${url} ${text}`.toLowerCase();
+
+  if (!url.includes("sarkariresult.com")) {
+    return false;
+  }
+
+  if (
+    value.includes("result") &&
+    !value.includes("recruitment") &&
+    !value.includes("online form")
+  ) {
+    return false;
+  }
 
   const keywords = [
     "online form",
     "recruitment",
     "vacancy",
-    "job",
-    "post",
     "constable",
     "assistant",
     "officer",
@@ -66,18 +77,24 @@ function isJobLink(url, text) {
     "technician",
     "apprentice",
     "mts",
-    "group"
+    "group",
+    "junior",
+    "senior",
+    "staff",
+    "si ",
+    "sub inspector",
+    "forest guard",
+    "stenographer"
   ];
 
   return keywords.some(
-    keyword =>
-      value.includes(keyword)
+    keyword => value.includes(keyword)
   );
 }
 
 async function getJobLinks() {
   console.log(
-    "Fetching SarkariResult..."
+    "Fetching SarkariResult homepage..."
   );
 
   const html =
@@ -110,22 +127,7 @@ async function getJobLinks() {
     }
 
     if (
-      !url.includes(
-        "sarkariresult.com"
-      )
-    ) {
-      return;
-    }
-
-    if (
-      url === SOURCE_URL ||
-      url.endsWith("/")
-    ) {
-      return;
-    }
-
-    if (
-      isJobLink(
+      isUsefulJobLink(
         url,
         text
       )
@@ -156,13 +158,39 @@ async function getJobLinks() {
   ];
 }
 
-function findValue(
+function sectionText(
+  $,
+  heading
+) {
+  let result = "";
+
+  $("body *").each((_, element) => {
+    const text =
+      clean($(element).text());
+
+    if (
+      text.toLowerCase() ===
+      heading.toLowerCase()
+    ) {
+      const parent =
+        $(element).parent();
+
+      result +=
+        " " +
+        clean(
+          parent.text()
+        );
+    }
+  });
+
+  return clean(result);
+}
+
+function extractValue(
   text,
   patterns
 ) {
-  for (
-    const pattern of patterns
-  ) {
+  for (const pattern of patterns) {
     const match =
       text.match(pattern);
 
@@ -179,93 +207,78 @@ function findValue(
   return "";
 }
 
-function extractOrganization(
-  text
-) {
-  return findValue(
+function extractStartDate(text) {
+  return extractValue(
     text,
     [
-      /(?:organization|organisation)\s*[:\-]\s*([^\n]+)/i,
-
-      /([A-Z][A-Za-z .&()'-]{3,100})\s*\n+\s*(?:Recruitment|Online Form|Examination)/i
-    ]
-  );
-}
-
-function extractVacancy(text) {
-  return findValue(
-    text,
-    [
-      /(?:total\s+)?vacancies?\s*[:\-]?\s*(\d[\d,\s]*)/i,
-
-      /(?:no\.?\s+of\s+)?posts?\s*[:\-]?\s*(\d[\d,\s]*)/i,
-
-      /for\s+(\d[\d,]*)\s+post/i
+      /Application Begin\s*:?\s*([^\n|]+)/i,
+      /Application Begin\s*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{4})/i
     ]
   );
 }
 
 function extractLastDate(text) {
-  return findValue(
+  return extractValue(
     text,
     [
-      /last\s+date\s+for\s+apply\s+online\s*[:\-]?\s*([^\n]+)/i,
-
-      /last\s+date\s+to\s+apply\s*[:\-]?\s*([^\n]+)/i,
-
-      /last\s+date\s*[:\-]?\s*([^\n]+)/i
-    ]
-  );
-}
-
-function extractStartDate(text) {
-  return findValue(
-    text,
-    [
-      /application\s+begin\s*[:\-]?\s*([^\n]+)/i,
-
-      /apply\s+online\s+start\s*[:\-]?\s*([^\n]+)/i,
-
-      /online\s+form\s+start\s*[:\-]?\s*([^\n]+)/i
+      /Last Date for Apply Online\s*:?\s*([^\n|]+)/i,
+      /Last Date to Apply\s*:?\s*([^\n|]+)/i,
+      /Last Date\s*:?\s*([^\n|]+)/i
     ]
   );
 }
 
 function extractFee(text) {
-  return findValue(
+  return extractValue(
     text,
     [
-      /application\s+fee\s*[:\-]?\s*([^\n]+)/i,
-
-      /examination\s+fee\s*[:\-]?\s*([^\n]+)/i,
-
-      /exam\s+fee\s*[:\-]?\s*([^\n]+)/i
+      /Application Fee\s*:?\s*([\s\S]{0,600}?)(?=Age Limit|Eligibility|Vacancy|Important Dates|Selection Process|$)/i
     ]
   );
 }
 
 function extractAge(text) {
-  return findValue(
+  return extractValue(
     text,
     [
-      /age\s+limit\s*[:\-]?\s*([^\n]+)/i,
+      /Age Limit\s*:?\s*([\s\S]{0,500}?)(?=Application Fee|Eligibility|Vacancy|Important Dates|Selection Process|$)/i,
 
-      /minimum\s+age\s*[:\-]?\s*([^\n]+)/i,
+      /Minimum Age\s*:?\s*([^\n|]+)/i,
 
-      /maximum\s+age\s*[:\-]?\s*([^\n]+)/i
+      /Maximum Age\s*:?\s*([^\n|]+)/i
     ]
   );
 }
 
+function extractVacancy(text) {
+  const match =
+    text.match(
+      /(?:for|of|total)\s+([0-9][0-9,]*)\s+(?:Post|Posts|Vacancy|Vacancies)/i
+    );
+
+  if (match) {
+    return match[1];
+  }
+
+  const match2 =
+    text.match(
+      /([0-9][0-9,]*)\s+(?:Post|Posts|Vacancy|Vacancies)/i
+    );
+
+  return match2
+    ? match2[1]
+    : "";
+}
+
 function extractQualification(text) {
-  return findValue(
+  return extractValue(
     text,
     [
-      /educational\s+qualification\s*[:\-]?\s*([\s\S]{10,500}?)(?=age\s+limit|application\s+fee|important\s+dates|selection\s+process|$)/i,
+      /Educational Qualification\s*:?\s*([\s\S]{20,1000}?)(?=Age Limit|Application Fee|Important Dates|Selection Process|$)/i,
 
-      /qualification\s*[:\-]?\s*([\s\S]{10,500}?)(?=age\s+limit|application\s+fee|important\s+dates|selection\s+process|$)/i,
+      /Eligibility\s*:?\s*([\s\S]{20,1000}?)(?=Age Limit|Application Fee|Important Dates|Selection Process|$)/i,
 
-      /eligibility\s*[:\-]?\s*([\s\S]{10,500}?)(?=age\s+limit|application\s+fee|important\s+dates|selection\s+process|$)/i
+      /Qualification\s*:?\s*([\s\S]{20,1000}?)(?=Age Limit|Application Fee|Important Dates|Selection Process|$)/i
     ]
   );
 }
@@ -273,6 +286,7 @@ function extractQualification(text) {
 function findOfficialLinks($) {
   let applyLink = "";
   let notificationLink = "";
+  let officialLink = "";
 
   $("a").each((_, element) => {
     const text =
@@ -301,9 +315,8 @@ function findOfficialLinks($) {
     if (
       !applyLink &&
       (
-        lower.includes(
-          "apply online"
-        ) ||
+        lower.includes("apply online") ||
+        lower === "apply now" ||
         lower === "apply"
       )
     ) {
@@ -313,27 +326,30 @@ function findOfficialLinks($) {
     if (
       !notificationLink &&
       (
-        lower.includes(
-          "download notification"
-        ) ||
-        lower.includes(
-          "notification"
-        )
+        lower.includes("download notification") ||
+        lower === "notification" ||
+        lower.includes("notification")
       )
     ) {
       notificationLink = url;
+    }
+
+    if (
+      !officialLink &&
+      lower.includes("official website")
+    ) {
+      officialLink = url;
     }
   });
 
   return {
     applyLink,
-    notificationLink
+    notificationLink,
+    officialLink
   };
 }
 
-async function parseJob(
-  job
-) {
+async function parseJob(job) {
   console.log(
     "Reading:",
     job.title
@@ -341,14 +357,12 @@ async function parseJob(
 
   try {
     const html =
-      await getPage(
-        job.url
-      );
+      await getPage(job.url);
 
     const $ =
       cheerio.load(html);
 
-    const text =
+    const bodyText =
       clean(
         $("body").text()
       );
@@ -356,75 +370,81 @@ async function parseJob(
     const links =
       findOfficialLinks($);
 
-    const title =
+    const pageTitle =
       clean(
         $("h1").first().text()
       ) ||
+      clean(
+        $("title").text()
+      ) ||
       job.title;
-
-    const organization =
-      extractOrganization(
-        text
-      ) ||
-      "See Official Notification";
-
-    const vacancy =
-      extractVacancy(
-        text
-      ) ||
-      "See Official Notification";
 
     const startDate =
       extractStartDate(
-        text
-      ) ||
-      "See Official Notification";
+        bodyText
+      );
 
     const lastDate =
       extractLastDate(
-        text
-      ) ||
-      "See Official Notification";
+        bodyText
+      );
 
     const fee =
       extractFee(
-        text
-      ) ||
-      "See Official Notification";
+        bodyText
+      );
 
     const age =
       extractAge(
-        text
-      ) ||
-      "See Official Notification";
+        bodyText
+      );
+
+    const vacancy =
+      extractVacancy(
+        bodyText
+      );
 
     const qualification =
       extractQualification(
-        text
-      ) ||
-      "See Official Notification";
+        bodyText
+      );
 
     return {
-      id: makeId(
-        title,
-        job.url
-      ),
+      id:
+        makeId(
+          pageTitle,
+          job.url
+        ),
 
-      title,
+      title:
+        pageTitle,
 
-      organization,
+      organization:
+        "See Official Notification",
 
-      vacancy,
+      vacancy:
+        vacancy ||
+        "See Official Notification",
 
-      startDate,
+      startDate:
+        startDate ||
+        "See Official Notification",
 
-      lastDate,
+      lastDate:
+        lastDate ||
+        "See Official Notification",
 
-      fee,
+      fee:
+        fee ||
+        "See Official Notification",
 
-      qualification,
+      qualification:
+        qualification ||
+        "See Official Notification",
 
-      age,
+      age:
+        age ||
+        "See Official Notification",
 
       method:
         "Online",
@@ -436,6 +456,10 @@ async function parseJob(
       notificationLink:
         links.notificationLink ||
         job.url,
+
+      officialWebsite:
+        links.officialLink ||
+        "",
 
       category:
         "Government Jobs",
@@ -453,6 +477,10 @@ async function parseJob(
   } catch (error) {
     console.log(
       "Failed:",
+      job.url
+    );
+
+    console.log(
       error.message
     );
 
@@ -462,79 +490,82 @@ async function parseJob(
 
 async function main() {
   console.log(
-    "================================"
+    "======================================"
   );
 
   console.log(
-    "SarkariResult Government Job Updater"
+    "SARKARI RESULT JOB UPDATER"
   );
 
   console.log(
-    "================================"
+    "======================================"
   );
 
-  const links =
-    await getJobLinks();
+  let links = [];
+
+  try {
+    links =
+      await getJobLinks();
+  } catch (error) {
+    console.error(
+      "SarkariResult access failed:"
+    );
+
+    console.error(
+      error.message
+    );
+
+    process.exit(1);
+  }
 
   console.log(
     "Job links found:",
     links.length
   );
 
-  const oldJobs =
-    loadOldJobs();
-
-  const oldMap =
-    new Map(
-      oldJobs.map(
-        job => [
-          job.sourceLink ||
-          job.id,
-          job
-        ]
-      )
+  if (links.length === 0) {
+    console.log(
+      "No job links found."
     );
+
+    process.exit(1);
+  }
+
+  const oldJobs =
+    loadJobs();
 
   const result = [];
 
-  // First 50 job pages
-  // are checked every run.
+  // Process maximum 30 fresh jobs
   const jobsToProcess =
-    links.slice(0, 50);
+    links.slice(0, 30);
 
-  for (
-    const job of jobsToProcess
-  ) {
+  for (const job of jobsToProcess) {
+
     const parsed =
-      await parseJob(
-        job
-      );
+      await parseJob(job);
 
     if (parsed) {
-      result.push(
-        parsed
-      );
+      result.push(parsed);
     }
 
-    // Small delay
     await new Promise(
       resolve =>
         setTimeout(
           resolve,
-          1000
+          1200
         )
     );
   }
 
-  // Keep old jobs that
-  // are not currently discovered.
-  for (
-    const old of oldJobs
-  ) {
+  // Keep previous jobs
+  for (const old of oldJobs) {
+
     const exists =
       result.some(
         job =>
-          job.id === old.id
+          job.sourceLink ===
+          old.sourceLink
       );
 
     if (!exists) {
@@ -542,23 +573,21 @@ async function main() {
     }
   }
 
-  // Remove duplicates
   const unique =
     new Map();
 
-  for (
-    const job of result
-  ) {
+  for (const job of result) {
     unique.set(
+      job.sourceLink ||
       job.id,
       job
     );
   }
 
   const finalJobs =
-    [
-      ...unique.values()
-    ].slice(0, 100);
+    Array.from(
+      unique.values()
+    ).slice(0, 100);
 
   fs.writeFileSync(
     JOBS_FILE,
@@ -570,7 +599,7 @@ async function main() {
   );
 
   console.log(
-    "================================"
+    "======================================"
   );
 
   console.log(
@@ -583,20 +612,18 @@ async function main() {
   );
 
   console.log(
-    "================================"
+    "======================================"
   );
 }
 
-main().catch(
-  error => {
-    console.error(
-      "Updater failed:"
-    );
+main().catch(error => {
+  console.error(
+    "Updater failed:"
+  );
 
-    console.error(
-      error
-    );
+  console.error(
+    error
+  );
 
-    process.exit(1);
-  }
-);
+  process.exit(1);
+});
