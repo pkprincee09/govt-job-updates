@@ -77,10 +77,6 @@
       border-radius: 7px;
     }
 
-    .apply-btn:hover {
-      background: #1d4ed8;
-    }
-
     footer {
       text-align: center;
       padding: 25px;
@@ -91,38 +87,83 @@
 
 <body>
 
-  <header>
-    <h1>📢 Latest Government Jobs</h1>
-    <p>Latest Government Job Updates</p>
-  </header>
+<header>
+  <h1>📢 Latest Government Jobs</h1>
+  <p>Latest Government Job Updates</p>
+</header>
 
-  <div class="container">
+<div class="container">
 
-    <input
-      type="text"
-      id="search"
-      class="search"
-      placeholder="🔎 Search Government Jobs..."
-    >
+  <input
+    type="text"
+    id="search"
+    class="search"
+    placeholder="🔎 Search Government Jobs..."
+  >
 
-    <div id="jobs">
+  <div id="jobs">
+    Loading jobs...
+  </div>
+
+</div>
+
+<footer>
+  © 2026 Latest Government Jobs
+</footer>
+
+
+<script>
+
+async function loadJobs() {
+
+  try {
+
+    const response = await fetch("jobs.json");
+
+    const jobs = await response.json();
+
+    const container = document.getElementById("jobs");
+
+    container.innerHTML = jobs.map(job => `
 
       <div class="job-card">
 
-        <h2>🔥 Sample Government Job</h2>
+        <h2>🔥 ${job.title}</h2>
 
         <div class="job-info">
-          <p><strong>🏢 Organization:</strong> Government Department</p>
-          <p><strong>👥 Vacancy:</strong> 100 Posts</p>
-          <p><strong>📅 Start Date:</strong> 01-01-2026</p>
-          <p><strong>⏰ Last Date:</strong> 31-01-2026</p>
-          <p><strong>💰 Application Fee:</strong> Check Notification</p>
-          <p><strong>🎓 Qualification:</strong> Check Notification</p>
-          <p><strong>🎂 Age Limit:</strong> Check Notification</p>
+
+          <p><strong>🏢 Organization:</strong>
+            ${job.organization}
+          </p>
+
+          <p><strong>👥 Vacancy:</strong>
+            ${job.vacancy}
+          </p>
+
+          <p><strong>📅 Start Date:</strong>
+            ${job.startDate}
+          </p>
+
+          <p><strong>⏰ Last Date:</strong>
+            ${job.lastDate}
+          </p>
+
+          <p><strong>💰 Application Fee:</strong>
+            ${job.fee}
+          </p>
+
+          <p><strong>🎓 Qualification:</strong>
+            ${job.qualification}
+          </p>
+
+          <p><strong>🎂 Age Limit:</strong>
+            ${job.age}
+          </p>
+
         </div>
 
         <a
-          href="#"
+          href="${job.applyLink}"
           class="apply-btn"
           target="_blank"
         >
@@ -131,32 +172,45 @@
 
       </div>
 
-    </div>
+    `).join("");
 
-  </div>
 
-  <footer>
-    © 2026 Latest Government Jobs
-  </footer>
+    // Search
 
-  <script>
-    const search = document.getElementById("search");
+    document
+      .getElementById("search")
+      .addEventListener("input", function() {
 
-    search.addEventListener("input", function () {
+        const value = this.value.toLowerCase();
 
-      const value = this.value.toLowerCase();
+        document
+          .querySelectorAll(".job-card")
+          .forEach(card => {
 
-      document.querySelectorAll(".job-card").forEach(card => {
+            card.style.display =
+              card.innerText
+                .toLowerCase()
+                .includes(value)
+                ? "block"
+                : "none";
 
-        const text = card.innerText.toLowerCase();
-
-        card.style.display =
-          text.includes(value) ? "block" : "none";
+          });
 
       });
 
-    });
-  </script>
+
+  } catch (error) {
+
+    document.getElementById("jobs").innerHTML =
+      "❌ Jobs load नहीं हो पाए।";
+
+  }
+
+}
+
+loadJobs();
+
+</script>
 
 </body>
 </html>
